@@ -1,0 +1,194 @@
+# The film: lighting, the shot list and the grade over time. 3:29 at 24 fps; every shot dissolves into the next.
+var M = import("Processing");
+var S = import("String");
+var A = import("Array");
+var Pm = import(currWorkingDir + "/params.aqua");
+
+var DURATION = 209.0d;
+
+var light = function(sunDir, sun, sky, fog, cloudLo, cloudHi, cloudDen, wet, lights) {
+    return {"sunDir": sunDir, "sun": sun, "sky": sky, "skyCol": [0.80d, 0.84d, 0.88d], "sunCol": [1.0d, 0.92d, 0.80d],
+        "fogCol": [0.64d, 0.67d, 0.70d], "fog": fog, "fogH": 70.0d, "cloudLo": cloudLo, "cloudHi": cloudHi,
+        "cloudDen": cloudDen, "wet": wet, "lights": lights, "wind": [0.0d, 0.0d, 0.0d]};
+};
+
+# Grey morning; the same day later; the afternoon break in the clouds; dusk; the last light.
+var MORNING = light([0.3d, 0.5d, -0.8d], 0.2d, 1.0d, 0.0009d, 175.0d, 290.0d, 0.06d, 0.7d, 0.0d);
+var DAY = light([0.3d, 0.6d, -0.7d], 0.3d, 1.0d, 0.0008d, 170.0d, 290.0d, 0.05d, 0.6d, 0.0d);
+var BREAK = light([0.75d, 0.22d, -0.62d], 2.0d, 0.85d, 0.0008d, 180.0d, 300.0d, 0.01d, 0.5d, 0.0d);
+BREAK["sunCol"] = [1.0d, 0.80d, 0.60d];
+var DUSK = light([-0.9d, 0.02d, -0.3d], 0.15d, 0.30d, 0.0011d, 170.0d, 290.0d, 0.05d, 0.7d, 1.0d);
+DUSK["skyCol"] = [0.70d, 0.77d, 0.92d];
+DUSK["fogCol"] = [0.48d, 0.53d, 0.62d];
+DUSK["sunCol"] = [1.0d, 0.55d, 0.35d];
+var NIGHT = light([-0.9d, -0.05d, -0.3d], 0.0d, 0.16d, 0.0013d, 170.0d, 290.0d, 0.05d, 0.7d, 1.0d);
+NIGHT["skyCol"] = [0.62d, 0.70d, 0.90d];
+NIGHT["fogCol"] = [0.42d, 0.47d, 0.58d];
+var LIGHTS = [MORNING, DAY, BREAK, DUSK, NIGHT];
+
+var KEYS = ["sunDir", "sun", "sky", "skyCol", "sunCol", "fogCol", "fog", "fogH", "cloudLo", "cloudHi", "cloudDen", "wet", "lights", "wind"];
+var copyLight = function(L) {
+    var c = {};
+    for (var i = 0; i < len(KEYS); i++) { c[KEYS[i]] = L[KEYS[i]]; }
+    return c;
+};
+
+var lerp = function(a, b, u) { return a + (b - a) * u; };
+var lerp3 = function(a, b, u) { return [lerp(a[0], b[0], u), lerp(a[1], b[1], u), lerp(a[2], b[2], u)]; };
+var clamp01 = function(x) { if (x < 0) { return 0.0d; } if (x > 1) { return 1.0d; } return x; };
+var smooth = function(x) { var u = clamp01(x); return u * u * (3 - 2 * u); };
+# Half linear, half eased: moves already under way at the dissolves, settling gently.
+var ease = function(u) { return lerp(u, smooth(u), 0.5d); };
+
+var cam = function(pos, target, fov) {
+    return {"pos": pos, "target": target, "fov": fov, "roll": 0.0d, "aperture": 0.0d, "focus": 10.0d};
+};
+
+struct Shot { start; end; camAt; lightAt; expo; sat; warm }
+
+var mix = function(L0, L1, u) {
+    var c = copyLight(L0);
+    var nums = ["sun", "sky", "fog", "fogH", "cloudLo", "cloudHi", "cloudDen", "wet", "lights"];
+    for (var i = 0; i < len(nums); i++) { c[nums[i]] = lerp(L0[nums[i]], L1[nums[i]], u); }
+    var vecs = ["sunDir", "skyCol", "sunCol", "fogCol"];
+    for (var j = 0; j < len(vecs); j++) { c[vecs[j]] = lerp3(L0[vecs[j]], L1[vecs[j]], u); }
+    return c;
+};
+var withWind = function(L, t) {
+    var c = copyLight(L);
+    c["wind"] = [t * 0.018d, t * 0.004d, t * 0.010d];
+    return c;
+};
+
+var SHOTS = [];
+var add = function(start, end, camAt, lightAt, expo, sat, warm) {
+    A.Append(SHOTS, Shot(start, end, camAt, lightAt, expo, sat, warm));
+};
+var still = function(L) { return function(u) { return L; }; };
+
+# 1. Down through the cloud deck; the tops of the main cluster come out of the mist.
+add(0.0d, 21.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([-175.0d, 214.0d, 300.0d], [-130.0d, 150.0d, 215.0d], e), lerp3([18.0d, 150.0d, 25.0d], [18.0d, 110.0d, 25.0d], e), 40.0d);
+}, still(MORNING), 0.80d, 0.76d, 0.2d);
+
+# 2. The establishing view: the clusters over the low city, a slow lateral move.
+add(18.0d, 43.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([-470.0d, 105.0d, 330.0d], [-430.0d, 100.0d, 170.0d], e), lerp3([40.0d, 72.0d, 60.0d], [60.0d, 70.0d, -10.0d], e), 30.0d);
+}, still(MORNING), 0.80d, 0.76d, 0.2d);
+
+# 3. Street level, walking pace towards the single-core tower, wet road, the decks overhead.
+add(40.0d, 63.0d, function(u) {
+    var e = ease(u);
+    var c = cam(lerp3([-240.0d, 1.65d, -175.0d], [-240.0d, 1.65d, -147.0d], e), lerp3([-232.0d, 14.0d, 0.0d], [-226.0d, 22.0d, 0.0d], e), 50.0d);
+    c["aperture"] = 0.012d;
+    c["focus"] = 60.0d;
+    return c;
+}, still(MORNING), 0.85d, 0.76d, 0.2d);
+
+# 4. The plaza of the main cluster: rising beside a shaft, tilting up to the first crib.
+add(60.0d, 83.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([-52.0d, 2.0d, -40.0d], [-46.0d, 26.0d, -34.0d], e), lerp3([-6.0d, 20.0d, 0.0d], [0.0d, 70.0d, 4.0d], e), 46.0d);
+}, still(DAY), 0.82d, 0.76d, 0.2d);
+
+# 5. Craning up past the cribs at a distance, a slow arc.
+add(80.0d, 103.0d, function(u) {
+    var e = ease(u);
+    var a = lerp(-2.2d, -1.85d, e);
+    var r = 135.0d;
+    return cam([18.0d + r * M.cos(a), lerp(46.0d, 104.0d, e), 25.0d + r * M.sin(a)], [18.0d, lerp(70.0d, 112.0d, e), 25.0d], 30.0d);
+}, still(DAY), 0.82d, 0.76d, 0.2d);
+
+# 6. Under the cribs, looking up through the lattice, turning slowly.
+add(100.0d, 124.0d, function(u) {
+    var e = ease(u);
+    var a = lerp(0.3d, 0.95d, e);
+    return cam([20.0d, 3.0d, 22.0d], [20.0d + 40.0d * M.cos(a), 70.0d, 22.0d + 40.0d * M.sin(a)], 58.0d);
+}, still(DAY), 0.82d, 0.76d, 0.2d);
+
+# 7. Flying between the crib levels through the cluster, between the shafts.
+add(121.0d, 146.0d, function(u) {
+    var e = ease(u);
+    var lp = lerp3([-75.0d, 98.0d, 21.0d], [70.0d, 101.0d, 21.0d], e);
+    var lt = lerp3([60.0d, 94.0d, 21.0d], [200.0d, 82.0d, 30.0d], e);
+    var ca = M.cos(0.21d);
+    var sa = M.sin(0.21d);
+    var w = function(v) { return [ca * v[0] - sa * v[2], v[1], sa * v[0] + ca * v[2]]; };
+    return cam(w(lp), w(lt), 60.0d);
+}, still(DAY), 0.82d, 0.76d, 0.25d);
+
+# 8. The afternoon break: the sun comes through low from the west and goes again.
+add(143.0d, 169.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([330.0d, 128.0d, -250.0d], [300.0d, 122.0d, -205.0d], e), lerp3([60.0d, 82.0d, 10.0d], [40.0d, 80.0d, 30.0d], e), 34.0d);
+}, function(u) {
+    var k = smooth((u - 0.12d) / 0.3d) * (1 - smooth((u - 0.78d) / 0.22d));
+    return mix(DAY, BREAK, k);
+}, 0.62d, 0.82d, 0.9d);
+
+# 9. Dusk beside a street in the sky: trams below, windows coming on one by one, a cluster ahead.
+add(166.0d, 190.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([-294.5d, 13.0d, -480.0d], [-294.5d, 13.6d, -428.0d], e), lerp3([-302.0d, 26.0d, -150.0d], [-306.0d, 34.0d, -140.0d], e), 44.0d);
+}, function(u) {
+    var L = mix(DUSK, NIGHT, smooth(u) * 0.4d);
+    L["lights"] = 0.15d + 0.85d * smooth(u * 1.3d);
+    return L;
+}, 1.9d, 0.85d, 0.6d);
+
+# 10. Far away and high: the clusters as silhouettes in the fog, the lights below; the title, then black.
+add(187.0d, 209.0d, function(u) {
+    var e = ease(u);
+    return cam(lerp3([-780.0d, 150.0d, 760.0d], [-740.0d, 140.0d, 700.0d], e), lerp3([30.0d, 70.0d, 0.0d], [40.0d, 68.0d, -10.0d], e), 26.0d);
+}, still(NIGHT), 2.6d, 0.85d, 0.5d);
+
+var free = null;
+var freeCam = function(args, preset) {
+    var v = [];
+    for (var i = 0; i < len(args); i++) { A.Append(v, Pm.parseFloat(args[i])); }
+    free = {"cam": cam([v[0], v[1], v[2]], [v[3], v[4], v[5]], v[6]), "light": LIGHTS[preset], "weight": 1.0d,
+        "expo": Pm.num("expo", 0.8d), "sat": 0.8d, "warm": 0.2d, "time": Pm.num("t", 30)};
+};
+
+var shotView = function(s, t) {
+    var u = clamp01((t - s.start) / (s.end - s.start));
+    return {"cam": s.camAt(u), "light": withWind(s.lightAt(u), t), "weight": 1.0d, "expo": s.expo, "sat": s.sat, "warm": s.warm, "time": t};
+};
+
+# The views of time t: one, or two crossing in a dissolve (the later one's weight rises smoothly). Weights sum to 1.
+var viewsAt = function(t) {
+    if (free != null) { return [free]; }
+    var views = [];
+    for (var i = 0; i < len(SHOTS); i++) {
+        var s = SHOTS[i];
+        if (t >= s.start && t < s.end) {
+            var v = shotView(s, t);
+            if (i > 0 && t < SHOTS[i - 1].end) { v["weight"] = smooth((t - s.start) / (SHOTS[i - 1].end - s.start)); }
+            if (i + 1 < len(SHOTS) && t >= SHOTS[i + 1].start) {
+                v["weight"] = 1 - smooth((t - SHOTS[i + 1].start) / (s.end - SHOTS[i + 1].start));
+            }
+            A.Append(views, v);
+        }
+    }
+    if (len(views) == 0) { A.Append(views, shotView(SHOTS[len(SHOTS) - 1], t)); }
+    var total = 0.0d;
+    for (var k = 0; k < len(views); k++) { total = total + views[k]["weight"]; }
+    for (var k2 = 0; k2 < len(views); k2++) { views[k2]["weight"] = views[k2]["weight"] / total; }
+    return views;
+};
+
+# Grade: the views' saturation and warmth by weight; fade in over the first 4 s, out to black from 203 s to 206.5 s.
+var gradeAt = function(t) {
+    var views = viewsAt(t);
+    var sat = 0.0d;
+    var warm = 0.0d;
+    for (var i = 0; i < len(views); i++) {
+        sat = sat + views[i]["sat"] * views[i]["weight"];
+        warm = warm + views[i]["warm"] * views[i]["weight"];
+    }
+    var fade = smooth(t / 4.0d) * (1 - smooth((t - 203.0d) / 3.5d));
+    if (free != null) { fade = 1.0d; }
+    return {"expo": 1.0d, "sat": sat, "fade": fade, "warm": warm};
+};

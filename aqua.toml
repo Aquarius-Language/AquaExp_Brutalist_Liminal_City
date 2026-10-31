@@ -1,0 +1,12 @@
+manifest_version = 1
+assets = ["shaders"]
+
+[project]
+name = "AquaExp_dystopia"
+type = "executable"
+version = "1.0.0"
+entry = "main.aqua"
+sources = ["main.aqua", "params.aqua", "gpu.aqua", "shots.aqua"]
+platforms = ["windows", "linux", "web"]
+description = "Concrete joint-core towers over a grey city, rendered offline in AquariusLang on WebGPU."
+license = "MIT"

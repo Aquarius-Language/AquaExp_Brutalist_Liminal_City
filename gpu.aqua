@@ -1,0 +1,132 @@
+# WebGPU plumbing on the graphics library's WGPU module: napali's prog(), tex(), fbo() and draws. Every pass is a
+# full-screen triangle into a render target; a "texture" of the page is a target here (sampled through GetTexture()).
+# Uniforms are set by name like gl.uniform*: names a pass does not declare are ignored, arrays are padded.
+var GPU = import("WGPU");
+var Files = import("Files");
+var S = import("String");
+var A = import("Array");
+var H = import("Hash");
+
+var VS = "@vertex fn vs_main(@builtin(vertex_index) i: u32) -> VertexOutput {
+    var o: VertexOutput;
+    let x = f32((i << 1u) & 2u);
+    let y = f32(i & 2u);
+    o.position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    return o;
+}";
+
+struct Prog { s; name; fields; textures }
+struct Target { t; tex; w; h; extra }
+
+# The UserUniforms fields of a WGSL source: name -> [kind ("i" or "f"), float count (Set) ].
+var uniformFields = function(src) {
+    var fields = {};
+    var start = S.Find(src, "struct UserUniforms {");
+    if (start < 0) { return fields; }
+    var rest = S.Slice(src, start + 21, len(src));
+    # without whitespace (spaces, tabs, line ends)
+    var raw = S.Slice(rest, 0, S.Find(rest, "}"));
+    var body = "";
+    for (var k = 0; k < len(raw); k++) { if (S.Code(raw, k) > 32) { body += raw[k]; } }
+    # fields end at commas outside <...> (array<vec4<f32>,24> holds one)
+    var lines = [];
+    var depth = 0;
+    var from = 0;
+    for (var c = 0; c < len(body); c++) {
+        if (body[c] == "<") { depth++; }
+        else if (body[c] == ">") { depth -= 1; }
+        else if (body[c] == "," && depth == 0) { A.Append(lines, S.Slice(body, from, c)); from = c + 1; }
+    }
+    A.Append(lines, S.Slice(body, from, len(body)));
+    for (var i = 0; i < len(lines); i++) {
+        var line = lines[i];
+        var colon = S.Find(line, ":");
+        if (colon < 0) { continue; }
+        var name = S.Slice(line, 0, colon);
+        var type = S.Slice(line, colon + 1, len(line));
+        if (type == "i32" || type == "u32") { fields[name] = ["i", 1]; }
+        else if (type == "f32") { fields[name] = ["f", 1]; }
+        else if (type == "vec2<f32>") { fields[name] = ["f", 2]; }
+        else if (type == "vec3<f32>") { fields[name] = ["f", 3]; }
+        else if (type == "vec4<f32>") { fields[name] = ["f", 4]; }
+        else if (type == "mat3x3<f32>") { fields[name] = ["f", 9]; }
+        else if (S.StartsWith(type, "array<vec4<f32>,")) {
+            fields[name] = ["f", 4 * S.ParseInt(S.Slice(type, 16, len(type) - 1))];
+        }
+    }
+    return fields;
+};
+
+# The group 2 textures a WGSL source declares.
+var textureNames = function(src) {
+    var names = [];
+    var parts = S.Split(src, ": texture_2d<f32>;");
+    for (var i = 0; i < len(parts) - 1; i++) {
+        var p = parts[i];
+        var v = S.Find(p, "var ");
+        var last = v;
+        for (; v >= 0;) {
+            last = v;
+            var next = S.Find(S.Slice(p, v + 4, len(p)), "var ");
+            if (next < 0) { break; }
+            v = v + 4 + next;
+        }
+        A.Append(names, S.Trim(S.Slice(p, last + 4, len(p))));
+    }
+    return names;
+};
+
+var dummy = null;
+
+var prog = function(dev, name) {
+    var src = Files.ReadAssetText("shaders/" + name + ".wgsl", "utf-8");
+    var P = Prog(dev.CreateShader(VS, src), name, uniformFields(src), textureNames(src));
+    if (H.Has(P.fields, "uZero")) { P.s.SetInt("uZero", 0); }
+    # every declared texture gets something bound (WebGL samples a default unit; WebGPU requires a binding)
+    if (dummy == null) { dummy = dev.CreateRenderTarget(1, 1, "rgba8unorm"); }
+    for (var i = 0; i < len(P.textures); i++) { P.s.SetTexture(P.textures[i], dummy.GetTexture()); }
+    return P;
+};
+
+var set = function(P, name, values) {
+    if (!H.Has(P.fields, name)) { return null; }
+    var f = P.fields[name];
+    if (f[0] == "i") { P.s.SetInt(name, int(values[0])); return null; }
+    var n = f[1];
+    if (len(values) == n) { P.s.Set(name, values); return null; }
+    var padded = A.Make(n, 0.0d);
+    for (var i = 0; i < len(values) && i < n; i++) { padded[i] = values[i]; }
+    P.s.Set(name, padded);
+};
+var f1 = function(P, name, x) { set(P, name, [x]); };
+var f2 = function(P, name, x, y) { set(P, name, [x, y]); };
+var f3 = function(P, name, x, y, z) { set(P, name, [x, y, z]); };
+var f4 = function(P, name, x, y, z, w) { set(P, name, [x, y, z, w]); };
+var i1 = function(P, name, x) { set(P, name, [x]); };
+var v4 = function(P, name, values) { set(P, name, values); };
+
+# Binds a target's color attachment `index` (0 for most).
+var bind = function(P, name, target) {
+    if (!A.Contains(P.textures, name)) { return null; }
+    P.s.SetTexture(name, target.tex);
+};
+var bindAt = function(P, name, target, index) {
+    if (!A.Contains(P.textures, name)) { return null; }
+    P.s.SetTexture(name, target.extra[index]);
+};
+
+# A render target ("texture + framebuffer" of the page): format r32float, rgba32float, rgba16float, r16float or
+# rgba8unorm; attachments > 1 for passes with several outputs; mipLevels for the mipmapped ocean maps.
+var target = function(dev, w, h, format, attachments, mips) {
+    var t = null;
+    if (attachments > 1 || mips > 1) { t = dev.CreateRenderTarget(w, h, format, {"attachments": attachments, "mipLevels": mips}); }
+    else { t = dev.CreateRenderTarget(w, h, format); }
+    t.SetState({"blend": "replace"});
+    var extra = [];
+    for (var i = 0; i < attachments; i++) { A.Append(extra, t.GetTexture(i)); }
+    return Target(t, extra[0], w, h, extra);
+};
+
+# One full-screen pass (the page's drawArrays(TRIANGLES, 0, 3) into a framebuffer).
+var draw = function(P, dst) { dst.t.DrawProcedural(P.s, 3); };
+var clear = function(dst) { dst.t.Clear([0, 0, 0, 0]); };

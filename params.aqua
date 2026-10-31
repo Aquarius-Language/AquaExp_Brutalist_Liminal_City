@@ -1,0 +1,67 @@
+# Settings: AQUARIUS_QUERY knobs (mode=still&t=42&spp=16&out=x.png). num('k', d) is the knob's number, else d.
+var App = import("Application");
+var S = import("String");
+var H = import("Hash");
+
+var parseQuery = function(text) {
+    var q = {};
+    if (text == null || len(text) == 0) { return q; }
+    var parts = S.Split(text, "&");
+    for (var i = 0; i < len(parts); i++) {
+        var p = parts[i];
+        if (len(p) == 0) { continue; }
+        var eq = S.Find(p, "=");
+        if (eq < 0) { q[p] = ""; } else { q[S.Slice(p, 0, eq)] = S.Slice(p, eq + 1, len(p)); }
+    }
+    return q;
+};
+
+# `&&` evaluates both sides, so reads past the end go through ch(): "" there.
+var ch = function(text, i) { if (i < len(text)) { return text[i]; } return ""; };
+var digit = function(c) { if (len(c) == 0) { return -1; } return S.Code(c, 0) - 48; };
+
+# JavaScript's parseFloat for the decimal forms knobs use ("-15", ".04", "1e-3"); NaN when no number starts the text.
+var parseFloat = function(text) {
+    var i = 0;
+    var n = len(text);
+    var sign = 1.0d;
+    if (ch(text, i) == "-" || ch(text, i) == "+") { if (text[i] == "-") { sign = -1.0d; } i++; }
+    var value = 0.0d;
+    var digits = 0;
+    for (; i < n; i++) {
+        var d = digit(ch(text, i));
+        if (d < 0 || d > 9) { break; }
+        value = value * 10 + d; digits++;
+    }
+    if (ch(text, i) == ".") {
+        i++;
+        var scale = 0.1d;
+        for (; i < n; i++) {
+            var d2 = digit(ch(text, i));
+            if (d2 < 0 || d2 > 9) { break; }
+            value += d2 * scale; scale *= 0.1d; digits++;
+        }
+    }
+    if (digits == 0) { return 0.0d / 0.0d; }
+    if (ch(text, i) == "e" || ch(text, i) == "E") {
+        var j = i + 1;
+        var es = 1;
+        if (ch(text, j) == "-" || ch(text, j) == "+") { if (text[j] == "-") { es = -1; } j++; }
+        var e = 0;
+        var edigits = 0;
+        for (; j < n; j++) {
+            var d3 = digit(ch(text, j));
+            if (d3 < 0 || d3 > 9) { break; }
+            e = e * 10 + d3; edigits++;
+        }
+        if (edigits > 0) {
+            for (var k = 0; k < e; k++) { if (es > 0) { value *= 10; } else { value /= 10; } }
+        }
+    }
+    return sign * value;
+};
+
+var Q = parseQuery(App.Environment("AQUARIUS_QUERY"));
+var has = function(k) { return H.Has(Q, k); };
+var get = function(k) { if (H.Has(Q, k)) { return Q[k]; } return null; };
+var num = function(k, d) { if (H.Has(Q, k)) { return parseFloat(Q[k]); } return d * 1.0d; };

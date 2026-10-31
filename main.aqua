@@ -1,0 +1,201 @@
+# Joint Core: a grey day over a city of concrete joint-core towers, rendered offline in AquariusLang on WebGPU.
+#
+# Settings come from AQUARIUS_QUERY:
+#   mode=still&t=42&out=x.png[&spp=32&width=1920&height=1080]   one frame of the film at time t (seconds)
+#   mode=sheet&times=5,40,80&out=s.png                          a contact sheet of frames (spp=8, 960 x 540 each)
+#   mode=video&out=frames[&f0=0&f1=5016&spp=32&fps=24]          the film's frames as PNG files (f1 exclusive)
+#   mode=still&cam=x,y,z,tx,ty,tz,fov&light=0&out=x.png         a free camera with lighting preset n
+var GPU = import("WGPU");
+var M = import("Processing");
+var A = import("Array");
+var S = import("String");
+var Files = import("Files");
+var Pm = import(currWorkingDir + "/params.aqua");
+var G = import(currWorkingDir + "/gpu.aqua");
+var Sh = import(currWorkingDir + "/shots.aqua");
+
+var MODE = "still";
+if (Pm.has("mode")) { MODE = Pm.get("mode"); }
+var width = int(Pm.num("width", 1920));
+var height = int(Pm.num("height", 1080));
+if (MODE == "sheet" && !Pm.has("width")) { width = 960; height = 540; }
+var bands = int(Pm.num("bands", 4));
+
+var dev = GPU.CreateDevice();
+print("backend", dev.Backend);
+var scene = G.prog(dev, "scene");
+var post = G.prog(dev, "post");
+var accA = G.target(dev, width, height, "rgba32float", 1, 1);
+var accB = G.target(dev, width, height, "rgba32float", 1, 1);
+var screen = G.target(dev, width, height, "rgba8unorm", 1, 1);
+var src = accA;
+var dst = accB;
+var frameSeed = 1;
+
+var sub = function(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; };
+var cross = function(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; };
+var norm = function(a) {
+    var l = M.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+# One sample of a view into dst (adding weight * sample to src), drawn in horizontal bands so no single submission
+# runs long enough for the GPU watchdog.
+var sample = function(view, weight, jx, jy) {
+    var c = view["cam"];
+    var L = view["light"];
+    var f = norm(sub(c["target"], c["pos"]));
+    var roll = c["roll"];
+    var upw = [M.sin(roll), M.cos(roll), 0];
+    var r = norm(cross(f, upw));
+    var u = cross(r, f);
+    var P = scene;
+    G.set(P, "uRes", [width, height]);
+    G.set(P, "uJitter", [jx, jy]);
+    G.f1(P, "uFrame", frameSeed);
+    frameSeed = frameSeed + 1;
+    G.f1(P, "uWeight", weight);
+    G.f1(P, "uFov", M.tan(c["fov"] * 0.5d * M.PI / 180));
+    G.f1(P, "uAperture", c["aperture"]);
+    G.f1(P, "uFocus", c["focus"]);
+    G.set(P, "uCamPos", c["pos"]);
+    G.set(P, "uCamR", r);
+    G.set(P, "uCamU", u);
+    G.set(P, "uCamF", f);
+    G.set(P, "uSunDir", norm(L["sunDir"]));
+    G.f1(P, "uSun", L["sun"]);
+    G.f1(P, "uSky", L["sky"]);
+    G.set(P, "uSunCol", L["sunCol"]);
+    G.set(P, "uSkyCol", L["skyCol"]);
+    G.set(P, "uFogCol", L["fogCol"]);
+    G.f1(P, "uFog", L["fog"]);
+    G.f1(P, "uFogH", L["fogH"]);
+    G.f1(P, "uCloudLo", L["cloudLo"]);
+    G.f1(P, "uCloudHi", L["cloudHi"]);
+    G.f1(P, "uCloudDen", L["cloudDen"]);
+    G.f1(P, "uWet", L["wet"]);
+    G.f1(P, "uLights", L["lights"]);
+    G.set(P, "uWind", L["wind"]);
+    G.f1(P, "uTime", view["time"]);
+    G.bind(P, "uAcc", src);
+    var bh = (height + bands - 1) / bands;
+    for (var b = 0; b < bands; b++) {
+        var y0 = b * bh;
+        var hh = bh;
+        if (y0 + hh > height) { hh = height - y0; }
+        dst.t.DrawProcedural(P.s, 3, 0, [0, y0, width, hh]);
+        dst.t.Flush();
+    }
+    var tmp = src;
+    src = dst;
+    dst = tmp;
+};
+
+# Halton (2, 3) pixel jitter, centred.
+var halton = function(i, b) {
+    var f = 1.0d;
+    var r = 0.0d;
+    var n = i;
+    for (; n > 0;) { f = f / b; r = r + f * (n % b); n = int(n / b); }
+    return r;
+};
+
+# A frame of the film at time t: every view of the frame (two during a dissolve) with its weight, spp samples in
+# all, sub-frame times spread over a 180-degree shutter for motion blur.
+var renderFrame = function(t, spp, fps) {
+    src.t.Clear([0, 0, 0, 0]);
+    dst.t.Clear([0, 0, 0, 0]);
+    for (var k = 0; k < spp; k++) {
+        var tk = t + ((k + 0.5d) / spp - 0.5d) * 0.5d / fps;
+        var views = Sh.viewsAt(tk);
+        var jx = halton(k + 1, 2) - 0.5d;
+        var jy = halton(k + 1, 3) - 0.5d;
+        for (var v = 0; v < len(views); v++) {
+            var view = views[v];
+            if (view["weight"] > 0.001d) { sample(view, view["weight"] * view["expo"], jx, jy); }
+        }
+    }
+    var g = Sh.gradeAt(t);
+    G.set(post, "uRes", [width, height]);
+    G.f1(post, "uExpo", g["expo"]);
+    G.f1(post, "uSat", g["sat"]);
+    G.f1(post, "uFade", g["fade"]);
+    G.f1(post, "uGrainSeed", (t * fps) % 997);
+    G.f1(post, "uWarm", g["warm"]);
+    G.f1(post, "uVignette", 0.35d);
+    G.bind(post, "uAcc", src);
+    screen.t.DrawProcedural(post.s, 3);
+    dev.Poll();
+};
+
+var pad = function(n, digits) {
+    var s = S.From(n);
+    for (; len(s) < digits;) { s = "0" + s; }
+    return s;
+};
+
+var main = function() {
+    var fps = Pm.num("fps", 24);
+    if (MODE == "still") {
+        var spp = int(Pm.num("spp", 32));
+        if (Pm.has("cam")) { Sh.freeCam(S.Split(Pm.get("cam"), ","), int(Pm.num("light", 0))); }
+        var t0 = currentTime();
+        renderFrame(Pm.num("t", 30), spp, fps);
+        print("frame ms", int(currentTime() - t0));
+        screen.t.Save(Pm.get("out"));
+        print("saved", Pm.get("out"));
+    } else if (MODE == "sheet") {
+        var times = S.Split(Pm.get("times"), ",");
+        var out = Pm.get("out");
+        var dir = out + ".frames";
+        Files.CreateDirectory(Files.Resolve(dir));
+        var inputs = [];
+        for (var k = 0; k < len(times); k++) {
+            renderFrame(Pm.parseFloat(times[k]), int(Pm.num("spp", 8)), fps);
+            var file = dir + "/f" + pad(k, 3) + ".png";
+            screen.t.Save(file);
+            A.AppendArray(inputs, ["-i", file]);
+        }
+        var n = len(times);
+        var cols = 3;
+        if (n < 3) { cols = n; }
+        var filter = "";
+        var stack = "";
+        var layout = [];
+        for (var k2 = 0; k2 < n; k2++) {
+            if (k2 > 0) { filter = filter + ";"; }
+            filter = filter + "[" + S.From(k2) + "]drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='" + times[k2] + "':x=8:y=8:fontsize=20:fontcolor=yellow[v" + S.From(k2) + "]";
+            stack = stack + "[v" + S.From(k2) + "]";
+            A.Append(layout, S.From((k2 % cols) * width) + "_" + S.From((k2 / cols) * height));
+        }
+        filter = filter + ";" + stack + "xstack=inputs=" + S.From(n) + ":layout=" + S.Join(layout, "|") + ":fill=black";
+        var args = ["-v", "error", "-y"];
+        A.AppendArray(args, inputs);
+        A.AppendArray(args, ["-filter_complex", filter, out]);
+        execFile("ffmpeg", args);
+        print("sheet saved", out);
+    } else if (MODE == "video") {
+        var spp2 = int(Pm.num("spp", 32));
+        var dir2 = Pm.get("out");
+        Files.CreateDirectory(Files.Resolve(dir2));
+        var f0 = int(Pm.num("f0", 0));
+        var f1 = int(Pm.num("f1", M.round(Sh.DURATION * fps)));
+        var step = int(Pm.num("step", 1));
+        var started = currentTime();
+        var done = 0;
+        for (var i = f0; i < f1; i += step) {
+            var file2 = dir2 + "/" + pad(i, 5) + ".png";
+            if (Files.Stat(Files.Resolve(file2)).exists && !Pm.has("force")) { continue; }
+            renderFrame(i / fps, spp2, fps);
+            screen.t.Save(file2);
+            done++;
+            if (done % 12 == 1) {
+                var el = (currentTime() - started) / 1000;
+                print("frame", i, "of", f1, int(el), "s elapsed,", int(el / done * 10) / 10.0d, "s per frame");
+            }
+        }
+        print("frames done in", int((currentTime() - started) / 60000), "min");
+    }
+};
+
+var finished = main();
