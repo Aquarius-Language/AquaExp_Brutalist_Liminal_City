@@ -1,6 +1,6 @@
-# AquaExp_dystopia: Joint Core
+# AquaExp_Brutalist_Liminal_City
 
-A 3:29 film of a grey brutalist city under Metabolist "joint core" towers, generated entirely in code in AquariusLang on
+A 3:29 film of a grey brutalist city under Metabolist towers, generated entirely in code in AquariusLang on
 the graphics library's WebGPU module (`WGPU`) and path traced offline. No models, textures or photographs.
 
 | Path | Contents |
